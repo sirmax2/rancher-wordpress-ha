@@ -39,6 +39,7 @@ if [ "${HTTP_DOCUMENTROOT}" == "**ChangeMe**" -o -z "${HTTP_DOCUMENTROOT}" ]; th
    HTTP_DOCUMENTROOT=${GLUSTER_VOL_PATH}/${WORDPRESS_NAME}
 fi
 
+
 ### Prepare configuration
 # nginx config
 perl -p -i -e "s/HTTP_PORT/${HTTP_PORT}/g" /etc/nginx/sites-enabled/wordpress
@@ -92,7 +93,7 @@ if grep "PXC nodes here" /etc/haproxy/haproxy.cfg >/dev/null; then
    PXC_HOSTS_COUNTER=0
 
    for host in `echo ${DB_HOSTS} | sed "s/,/ /g"`; do
-      PXC_HOSTS_HAPROXY="$PXC_HOSTS_HAPROXY\n  server pxc$PXC_HOSTS_COUNTER $host check port 9200 rise 2 fall 3"
+      PXC_HOSTS_HAPROXY="$PXC_HOSTS_HAPROXY\n  server pxc$PXC_HOSTS_COUNTER $host:3306 check"
       if [ $PXC_HOSTS_COUNTER -gt 0 ]; then
          PXC_HOSTS_HAPROXY="$PXC_HOSTS_HAPROXY backup"
       fi
@@ -104,6 +105,9 @@ if grep "PXC nodes here" /etc/haproxy/haproxy.cfg >/dev/null; then
 fi
 
 if [ ! -e ${HTTP_DOCUMENTROOT}/wp-config.php ] && [ -e ${HTTP_DOCUMENTROOT}/wp-config-sample.php ] ; then
+   
+### Prepare mysql ###
+   mysql -u root -p${DB_PASSWORD} -h${DB_HOST} -e "INSERT INTO mysql.user (Host,User) values ('%','haproxy_check'); FLUSH PRIVILEGES;"
    echo "=> Configuring wordpress..."
    touch ${HTTP_DOCUMENTROOT}/wp-config.php
    WP_DB_PASSWORD=`pwgen -s 20 1`

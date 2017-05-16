@@ -6,14 +6,6 @@ set -e
 
 # Required variables
 sleep 5
-export GLUSTER_HOSTS=`dig +short ${GLUSTER_HOST}`
-if [ -z "${GLUSTER_HOSTS}" ]; then
-   echo "*** ERROR: Could not determine which containers are part of Gluster service."
-   echo "*** Is Gluster service linked with the alias \"${GLUSTER_HOST}\"?"
-   echo "*** If not, please link gluster service as \"${GLUSTER_HOST}\""
-   echo "*** Exiting ..."
-   exit 1
-fi
 export DB_HOSTS=`dig +short ${DB_HOST}`
 if [ -z "${DB_HOSTS}" ]; then
    echo "*** ERROR: Could not determine which containers are part of PXC service."
@@ -23,20 +15,24 @@ if [ -z "${DB_HOSTS}" ]; then
    exit 1
 fi
 
-if [ "${DB_PASSWORD}" == "**ChangeMe**" -o -z "${DB_PASSWORD}" ]; then
-   DB_PASSWORD=${DB_ENV_PXC_ROOT_PASSWORD}
-   if [ "${DB_PASSWORD}" == "**ChangeMe**" -o -z "${DB_PASSWORD}" ]; then
+if [ "${DB_ADMIN_PASSWORD}" == "**ChangeMe**" -o -z "${DB_ADMIN_PASSWORD}" ]; then
+   DB_ADMIN_PASSWORD=${DB_ENV_PXC_ROOT_PASSWORD}
+   if [ "${DB_ADMIN_PASSWORD}" == "**ChangeMe**" -o -z "${DB_ADMIN_PASSWORD}" ]; then
       echo "ERROR: Could not retreive PXC_ROOT_PASSWORD from PXC service - DB_ENV_PXC_ROOT_PASSWORD env var is empty - Exiting..."
       exit 0
    fi
 fi
 
-if [ "${WP_DB_NAME}" == "**ChangeMe**" -o -z "${WP_DB_NAME}" ]; then
-   WP_DB_NAME=`echo "${WORDPRESS_NAME}" | sed "s/\./_/g"`
+if [ "${DB_WP_NAME}" == "**ChangeMe**" -o -z "${DB_WP_NAME}" ]; then
+   DB_WP_NAME=`echo "${WORDPRESS_NAME}" | sed "s/\./_/g"`
+fi
+
+if [ "${DB_WP_PASSWORD}" == "**ChangeMe**" -o -z "${DB_WP_PASSWORD}" ]; then
+   echo "*** ERROR: DB_WP_PASSWORD is not set - Exiting ..."
 fi
 
 if [ "${HTTP_DOCUMENTROOT}" == "**ChangeMe**" -o -z "${HTTP_DOCUMENTROOT}" ]; then
-   HTTP_DOCUMENTROOT=${GLUSTER_VOL_PATH}/${WORDPRESS_NAME}
+   HTTP_DOCUMENTROOT=/var/www/${WORDPRESS_NAME}
 fi
 
 
@@ -48,27 +44,7 @@ perl -p -i -e "s/HTTP_DOCUMENTROOT/${HTTP_ESCAPED_DOCROOT}/g" /etc/nginx/sites-e
 
 # php-fpm config
 PHP_ESCAPED_SESSION_PATH=`echo ${PHP_SESSION_PATH} | sed "s/\//\\\\\\\\\//g"`
-perl -p -i -e "s/;?session.save_path\s*=.*/session.save_path = \"${PHP_ESCAPED_SESSION_PATH}\"/g" /etc/php5/fpm/php.ini
-
-ALIVE=0
-for glusterHost in ${GLUSTER_HOSTS}; do
-    echo "=> Checking if I can reach GlusterFS node ${glusterHost} ..."
-    if ping -c 10 ${glusterHost} >/dev/null 2>&1; then
-       echo "=> GlusterFS node ${glusterHost} is alive"
-       ALIVE=1
-       break
-    else
-       echo "*** Could not reach server ${glusterHost} ..."
-    fi
-done
-
-if [ "$ALIVE" == 0 ]; then
-   echo "ERROR: could not contact any GlusterFS node from this list: ${GLUSTER_HOSTS} - Exiting..."
-   exit 1
-fi
-
-echo "=> Mounting GlusterFS volume ${GLUSTER_VOL} from GlusterFS node ${glusterHost} ..."
-mount -t glusterfs ${glusterHost}:/${GLUSTER_VOL} ${GLUSTER_VOL_PATH}
+perl -p -i -e "s/;?session.save_path\s*=.*/session.save_path = \"${PHP_ESCAPED_SESSION_PATH}\"/g" /etc/php/7.0/fpm/php.ini
 
 if [ ! -d ${HTTP_DOCUMENTROOT} ]; then
    mkdir -p ${HTTP_DOCUMENTROOT}
@@ -99,7 +75,8 @@ if grep "PXC nodes here" /etc/haproxy/haproxy.cfg >/dev/null; then
       fi
       PXC_HOSTS_COUNTER=$((PXC_HOSTS_COUNTER+1))
    done
-   perl -p -i -e "s/DB_PASSWORD/${DB_PASSWORD}/g" /etc/haproxy/haproxy.cfg
+   perl -p -i -e "s/DB_ADMIN_USER/${DB_ADMIN_USER}/g" /etc/haproxy/haproxy.cfg
+   perl -p -i -e "s/DB_ADMIN_PASSWORD/${DB_ADMIN_PASSWORD}/g" /etc/haproxy/haproxy.cfg
    perl -p -i -e "s/.*server pxc.*//g" /etc/haproxy/haproxy.cfg
    perl -p -i -e "s/# PXC nodes here.*/# PXC nodes here\n${PXC_HOSTS_HAPROXY}/g" /etc/haproxy/haproxy.cfg
 fi
@@ -107,13 +84,12 @@ fi
 if [ ! -e ${HTTP_DOCUMENTROOT}/wp-config.php ] && [ -e ${HTTP_DOCUMENTROOT}/wp-config-sample.php ] ; then
    
 ### Prepare mysql ###
-   mysql -u root -p${DB_PASSWORD} -h${DB_HOST} -e "INSERT INTO mysql.user (Host,User) values ('%','haproxy_check'); FLUSH PRIVILEGES;"
+   mysql -u ${DB_ADMIN_USER} -p${DB_ADMIN_PASSWORD} -h${DB_HOST} -e "INSERT INTO mysql.user (Host,User) values ('%','haproxy_check'); FLUSH PRIVILEGES;"
    echo "=> Configuring wordpress..."
    touch ${HTTP_DOCUMENTROOT}/wp-config.php
-   WP_DB_PASSWORD=`pwgen -s 20 1`
-   sed -e "s/database_name_here/$WP_DB_NAME/
-   s/username_here/$WP_DB_NAME/
-   s/password_here/$WP_DB_PASSWORD/
+   sed -e "s/database_name_here/$DB_WP_NAME/
+   s/username_here/$DB_WP_USER/
+   s/password_here/$DB_WP_PASSWORD/
    s/localhost/127.0.0.1/
    /'AUTH_KEY'/s/put your unique phrase here/`pwgen -c -n -1 65`/
    /'SECURE_AUTH_KEY'/s/put your unique phrase here/`pwgen -c -n -1 65`/
@@ -146,10 +122,10 @@ if ( count( \$plugins ) === 0 ) {
 }
 ENDL
 
-  echo "=> Creating database ${WP_DB_NAME}, username ${WP_DB_NAME}, with password ${WP_DB_PASSWORD} ..."
+  echo "=> Creating database ${DB_WP_NAME}, username ${DB_WP_NAME}, with password ${DB_WP_PASSWORD} ..."
   service haproxy start
   sleep 2
-  mysql -h 127.0.0.1 -u root -p${DB_PASSWORD} -e "CREATE DATABASE IF NOT EXISTS ${WP_DB_NAME}; GRANT ALL PRIVILEGES ON ${WP_DB_NAME}.* TO '${WP_DB_NAME}'@'10.42.%' IDENTIFIED BY '${WP_DB_PASSWORD}'; FLUSH PRIVILEGES;"
+  mysql -h 127.0.0.1 -u ${DB_ADMIN_USER} -p${DB_ADMIN_PASSWORD} -e "CREATE DATABASE IF NOT EXISTS ${DB_WP_NAME}; GRANT ALL PRIVILEGES ON ${DB_WP_NAME}.* TO '${DB_WP_USER}'@'10.42.%' IDENTIFIED BY '${DB_WP_PASSWORD}'; FLUSH PRIVILEGES;"
   service haproxy stop
 fi
 
